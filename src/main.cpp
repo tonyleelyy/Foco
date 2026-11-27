@@ -29,6 +29,7 @@ constexpr UINT TrayMessage = WM_APP + 2, OpenMessage = WM_APP + 3;
 constexpr UINT_PTR TrackTimer = 1, AnimationTimer = 2, ClockTimer = 3, SaveTimer = 4, IdentifyTimer = 5;
 constexpr ULONGLONG LeaveDelay = 150, CaptureBudget = 250, FadeIn = 180, FadeOut = 100;
 constexpr int DesignWidth = 900, DesignHeight = 643;
+constexpr int AppIconResource = 101, HeaderIconSize = 39;
 
 enum Control {
     Enable = 100, Target, Identify, Dim, DimSlider, Freeze, Saver, FadeLeave, FadeReturn, Startup,
@@ -187,6 +188,7 @@ private:
     void UpdateControls();
     void RefreshTheme();
     void RefreshFonts();
+    void RefreshHeaderIcon();
     void Layout();
     void Scroll(bool horizontal, WPARAM wparam);
     void Draw(HDC dc);
@@ -226,7 +228,7 @@ private:
 
     HINSTANCE instance_;
     HWND window_{};
-    HICON icon_{};
+    HICON icon_{}, smallIcon_{}, headerIcon_{};
     UINT taskbarCreated_{};
     UINT dpi_{96};
     bool trayReady_{}, wtsReady_{}, paused_{}, locked_{}, disconnected_{}, asleep_{}, tracking_{}, closing_{};
@@ -257,7 +259,7 @@ private:
 
 App::~App() {
     capture_.reset();
-    if (icon_) DestroyIcon(icon_);
+    for (auto icon : {icon_, smallIcon_, headerIcon_}) if (icon) DestroyIcon(icon);
     for (auto font : {regular_, medium_, title_, heading_, small_}) if (font) DeleteObject(font);
     if (panelBrush_) DeleteObject(panelBrush_);
     if (controlBrush_) DeleteObject(controlBrush_);
@@ -265,18 +267,20 @@ App::~App() {
 }
 
 bool App::Create(bool trayOnly) {
-    icon_ = static_cast<HICON>(LoadImageW(instance_, MAKEINTRESOURCEW(101), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR));
     taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
     INITCOMMONCONTROLSEX common{sizeof(common), ICC_BAR_CLASSES | ICC_HOTKEY_CLASS | ICC_STANDARD_CLASSES};
     if (!InitCommonControlsEx(&common)) return false;
     bufferedPaint_ = SUCCEEDED(BufferedPaintInit());
-    WNDCLASSW cls{};
+    LoadIconMetric(instance_, MAKEINTRESOURCEW(AppIconResource), LIM_LARGE, &icon_);
+    LoadIconMetric(instance_, MAKEINTRESOURCEW(AppIconResource), LIM_SMALL, &smallIcon_);
+    WNDCLASSEXW cls{sizeof(cls)};
     cls.hInstance = instance_;
     cls.hIcon = icon_;
+    cls.hIconSm = smallIcon_;
     cls.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     cls.lpszClassName = WindowClass;
     cls.lpfnWndProc = WindowProc;
-    if (!RegisterClassW(&cls) || !Presentation::Register(instance_)) return false;
+    if (!RegisterClassExW(&cls) || !Presentation::Register(instance_)) return false;
 
     const DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_HSCROLL | WS_VSCROLL;
     RECT work{};
@@ -459,6 +463,14 @@ void App::RefreshFonts() {
     title_ = font(33, FW_SEMIBOLD);
     heading_ = font(18, FW_SEMIBOLD);
     small_ = font(13, FW_NORMAL);
+}
+
+void App::RefreshHeaderIcon() {
+    const auto size = Px(HeaderIconSize);
+    HICON icon{};
+    if (SUCCEEDED(LoadIconWithScaleDown(instance_, MAKEINTRESOURCEW(AppIconResource), size, size, &icon))) {
+        if (const auto previous = std::exchange(headerIcon_, icon)) DestroyIcon(previous);
+    }
 }
 
 void App::Layout() {
@@ -737,7 +749,10 @@ void App::Draw(HDC dc) {
     RECT client{};
     GetClientRect(window_, &client);
     Fill(dc, client, palette_.background);
-    if (icon_) DrawIconEx(dc, Px(31) - offsetX_, Px(25) - offsetY_, icon_, Px(39), Px(39), 0, nullptr, DI_NORMAL);
+    if (const auto icon = headerIcon_ ? headerIcon_ : icon_) {
+        const auto size = Px(HeaderIconSize);
+        DrawIconEx(dc, Px(31) - offsetX_, Px(25) - offsetY_, icon, size, size, 0, nullptr, DI_NORMAL);
+    }
     Text(dc, Area(82, 21, 441, 68), L"Foco", title_, palette_.text);
     Text(dc, Area(34, 72, 650, 96), L"鼠标移出副屏时，自动应用选中的效果。", regular_, palette_.secondary);
     Rounded(dc, Area(28, 113, 434, 574), Px(17), palette_.panel, palette_.panelLine);
@@ -909,7 +924,7 @@ void App::AddTray() {
     auto icon = TrayData();
     icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
     icon.uCallbackMessage = TrayMessage;
-    icon.hIcon = icon_ ? icon_ : LoadIconW(nullptr, IDI_APPLICATION);
+    icon.hIcon = smallIcon_ ? smallIcon_ : LoadIconW(nullptr, IDI_APPLICATION);
     wcscpy_s(icon.szTip, L"Foco");
     trayReady_ = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE;
     if (trayReady_) {
@@ -1258,6 +1273,7 @@ LRESULT App::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
     switch (message) {
     case WM_CREATE:
         dpi_ = GetDpiForWindow(window_);
+        RefreshHeaderIcon();
         startAtLogin_ = StartAtLogin();
         SetupControls();
         RefreshFonts();
@@ -1302,6 +1318,7 @@ LRESULT App::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_DPICHANGED: {
         const auto* suggested = reinterpret_cast<const RECT*>(lparam);
         dpi_ = HIWORD(wparam);
+        RefreshHeaderIcon();
         ClearIdentifiers();
         RefreshFonts();
         SetWindowPos(window_, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,

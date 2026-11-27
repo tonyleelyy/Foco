@@ -4,8 +4,8 @@
 101 ICON "foco.ico"
 
 1 VERSIONINFO
- FILEVERSION 0,1,2,0
- PRODUCTVERSION 0,1,2,0
+ FILEVERSION 0,1,3,0
+ PRODUCTVERSION 0,1,3,0
  FILEOS VOS_NT_WINDOWS32
  FILETYPE VFT_APP
 BEGIN
@@ -14,10 +14,10 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "FileDescription", "Foco"
-            VALUE "FileVersion", "0.1.2"
+            VALUE "FileVersion", "0.1.3"
             VALUE "OriginalFilename", "Foco.exe"
             VALUE "ProductName", "Foco"
-            VALUE "ProductVersion", "0.1.2"
+            VALUE "ProductVersion", "0.1.3"
         END
     END
     BLOCK "VarFileInfo"
