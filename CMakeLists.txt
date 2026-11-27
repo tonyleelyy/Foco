@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Foco VERSION 0.1.1 LANGUAGES CXX RC)
+project(Foco VERSION 0.1.2 LANGUAGES CXX RC)
 
 add_executable(Foco WIN32
     src/main.cpp

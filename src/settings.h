@@ -8,7 +8,7 @@
 struct Settings {
     std::wstring monitorId;
     std::wstring wallpaper;
-    bool enabled = false;
+    bool enabled = true;
     bool dim = false;
     bool freeze = false;
     bool saver = false;

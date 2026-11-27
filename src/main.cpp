@@ -886,8 +886,9 @@ void App::SaveSoon() {
 
 void App::SaveNow() {
     KillTimer(window_, SaveTimer);
-    if (!std::exchange(savePending_, false)) return;
+    if (!savePending_) return;
     saveFailed_ = !SaveSettings(path_, settings_);
+    savePending_ = saveFailed_;
     if (!closing_) UpdateStatus();
 }
 
