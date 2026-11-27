@@ -26,17 +26,19 @@ using Microsoft::WRL::ComPtr;
 namespace {
 constexpr auto WindowClass = L"Foco.Settings";
 constexpr UINT TrayMessage = WM_APP + 2, OpenMessage = WM_APP + 3;
-constexpr UINT_PTR TrackTimer = 1, AnimationTimer = 2, ClockTimer = 3, SaveTimer = 4, IdentifyTimer = 5;
-constexpr ULONGLONG LeaveDelay = 150, CaptureBudget = 250, FadeIn = 180, FadeOut = 100;
+constexpr UINT_PTR TrackTimer = 1, AnimationTimer = 2, ClockTimer = 3, SaveTimer = 4, IdentifyTimer = 5,
+                   PauseTimer = 6;
+constexpr ULONGLONG CaptureBudget = 250, FadeIn = 180, FadeOut = 100;
+constexpr UINT MillisecondsPerMinute = 60'000;
 constexpr int DesignWidth = 900, DesignHeight = 643;
 constexpr int AppIconResource = 101, HeaderIconSize = 39;
 
 enum Control {
-    Enable = 100, Target, Identify, Dim, DimSlider, Freeze, Saver, FadeLeave, FadeReturn, Startup,
-    BackgroundType, Browse, Fit, BackgroundColor, Clock, TimeFormat, Seconds, Date, ClockSize,
+    Enable = 100, Target, Identify, Dim, DimSlider, Freeze, Saver, LeaveDelay, FadeLeave, FadeReturn, Startup,
+    BackgroundType, Browse, Fit, BackgroundColor, Clock, TimeFormat, Seconds, Date, Weekday, ClockSize,
     ClockPosition, ClockColor, Hotkey, HotkeyApply, ControlEnd
 };
-enum TrayCommand { TraySettings = 400, TrayPause, TrayExit };
+enum TrayCommand { TraySettings = 400, TrayPause, TrayPause15Minutes, TrayPause1Hour, TrayExit };
 
 struct Palette {
     COLORREF background, panel, panelLine, text, secondary, control, accent, accentText;
@@ -205,6 +207,9 @@ private:
     void TrayMenu();
     void UpdateStatus();
     void TogglePause();
+    void PauseFor(UINT durationMs);
+    void ClearPause();
+    void UpdateTimedPause();
     bool ApplyHotkey(WORD value, bool initial = false);
     void RefreshMonitors();
     const Monitor* TargetMonitor() const;
@@ -253,6 +258,7 @@ private:
     CaptureIssue captureIssue_{CaptureIssue::None};
     Phase phase_{Phase::Live};
     ULONGLONG outsideSince_{}, captureDeadline_{}, animationStart_{}, animationLength_{};
+    ULONGLONG pauseUntil_{};
     unsigned captureRequest_{};
     double progress_{}, animationFrom_{}, animationTo_{};
 };
@@ -362,6 +368,7 @@ void App::SetupControls() {
     SetWindowTextW(ControlWindow(DimSlider), L"变暗程度");
     Checkbox(Freeze, L"冻结");
     Checkbox(Saver, L"屏保");
+    Combo(LeaveDelay, {L"立即", L"150 毫秒", L"0.5 秒", L"1 秒", L"3 秒"});
     Checkbox(FadeLeave, L"移出时淡入");
     Checkbox(FadeReturn, L"移入时淡出");
     Checkbox(Startup, L"登录 Windows 后运行");
@@ -373,6 +380,7 @@ void App::SetupControls() {
     Combo(TimeFormat, {L"24 小时制", L"12 小时制"});
     Checkbox(Seconds, L"秒数");
     Checkbox(Date, L"日期");
+    Checkbox(Weekday, L"星期");
     Slider(ClockSize, 32, 200);
     SetWindowTextW(ControlWindow(ClockSize), L"时钟字号");
     Combo(ClockPosition, {L"居中", L"左上", L"右上", L"左下", L"右下"});
@@ -389,6 +397,7 @@ void App::SetupControls() {
     if (SUCCEEDED(CoCreateInstance(CLSID_AccPropServices, nullptr, CLSCTX_INPROC_SERVER,
                                   IID_PPV_ARGS(&accessibility)))) {
         const std::pair<Control, PCWSTR> names[]{{Target, L"目标副屏"}, {DimSlider, L"变暗程度"},
+            {LeaveDelay, L"离开延时"},
             {BackgroundType, L"屏保背景类型"}, {Fit, L"壁纸缩放"}, {TimeFormat, L"时钟小时制"},
             {ClockSize, L"时钟字号"}, {ClockPosition, L"时钟位置"}, {Hotkey, L"暂停快捷键"}};
         for (const auto& [control, name] : names) {
@@ -407,8 +416,11 @@ void App::SetupControls() {
     Check(Clock, settings_.clock);
     Check(Seconds, settings_.seconds);
     Check(Date, settings_.date);
+    Check(Weekday, settings_.weekday);
     SendMessageW(ControlWindow(DimSlider), TBM_SETPOS, TRUE, settings_.dimLevel);
     SendMessageW(ControlWindow(ClockSize), TBM_SETPOS, TRUE, settings_.clockSize);
+    const auto delay = std::find(LeaveDelaysMs.begin(), LeaveDelaysMs.end(), settings_.leaveDelayMs);
+    SendMessageW(ControlWindow(LeaveDelay), CB_SETCURSEL, static_cast<WPARAM>(delay - LeaveDelaysMs.begin()), 0);
     SendMessageW(ControlWindow(BackgroundType), CB_SETCURSEL, settings_.useImage, 0);
     SendMessageW(ControlWindow(Fit), CB_SETCURSEL, !settings_.fillImage, 0);
     SendMessageW(ControlWindow(TimeFormat), CB_SETCURSEL, settings_.twelveHour, 0);
@@ -422,7 +434,7 @@ void App::UpdateControls() {
     EnableWindow(ControlWindow(Browse), settings_.saver && settings_.useImage);
     EnableWindow(ControlWindow(Fit), settings_.saver && settings_.useImage);
     for (const auto id : {BackgroundType, BackgroundColor, Clock}) EnableWindow(ControlWindow(id), settings_.saver);
-    for (const auto id : {TimeFormat, Seconds, Date, ClockSize, ClockPosition, ClockColor})
+    for (const auto id : {TimeFormat, Seconds, Date, Weekday, ClockSize, ClockPosition, ClockColor})
         EnableWindow(ControlWindow(id), settings_.saver && settings_.clock);
     for (auto child : controls_) InvalidateRect(child, nullptr, FALSE);
     InvalidateRect(window_, nullptr, FALSE);
@@ -450,7 +462,7 @@ void App::RefreshFonts() {
     for (auto child : controls_) {
         SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(regular_), TRUE);
     }
-    for (auto id : {Target, BackgroundType, Fit, TimeFormat, ClockPosition}) {
+    for (auto id : {Target, LeaveDelay, BackgroundType, Fit, TimeFormat, ClockPosition}) {
         SendMessageW(ControlWindow(id), CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), Px(24));
         SendMessageW(ControlWindow(id), CB_SETITEMHEIGHT, 0, Px(27));
     }
@@ -497,6 +509,7 @@ void App::Layout() {
     place(DimSlider, 49, 257, 297, 28);
     place(Freeze, 48, 304, 351, 30);
     place(Saver, 48, 348, 351, 30);
+    place(LeaveDelay, 300, 411, 114, 178);
     place(FadeLeave, 48, 444, 173, 28);
     place(FadeReturn, 224, 444, 169, 28);
     place(Startup, 48, 514, 348, 28);
@@ -506,8 +519,9 @@ void App::Layout() {
     place(BackgroundColor, 782, 357, 74, 29);
     place(Clock, 475, 418, 170, 28);
     place(TimeFormat, 475, 455, 124, 150);
-    place(Seconds, 612, 452, 82, 30);
-    place(Date, 703, 452, 85, 30);
+    place(Seconds, 612, 452, 74, 30);
+    place(Date, 696, 452, 74, 30);
+    place(Weekday, 780, 452, 76, 30);
     place(ClockSize, 475, 518, 151, 28);
     place(ClockPosition, 658, 521, 106, 174);
     place(ClockColor, 782, 519, 74, 29);
@@ -761,7 +775,8 @@ void App::Draw(HDC dc) {
     Text(dc, Area(475, 126, 855, 157), L"效果预览", heading_, palette_.text);
     Text(dc, SliderLabelArea(DimSlider), std::to_wstring(settings_.dimLevel) + L"%", medium_, palette_.text, DT_RIGHT);
     Fill(dc, Area(48, 396, 414, 397), palette_.panelLine);
-    Text(dc, Area(48, 409, 410, 439), L"渐变过渡", heading_, palette_.text);
+    Text(dc, Area(48, 409, 220, 439), L"切换设置", heading_, palette_.text);
+    Text(dc, Area(230, 409, 292, 439), L"离开延时", small_, palette_.secondary, DT_RIGHT);
     Text(dc, Area(48, 475, 410, 497), L"关闭对应开关后，画面直接切换。", small_, palette_.secondary);
     DrawPreview(dc);
     Text(dc, Area(475, 322, 855, 351), L"屏保背景", heading_, palette_.text);
@@ -795,6 +810,11 @@ void App::HandleCommand(Control id, WORD notification) {
             Arm();
             break;
         }
+        case LeaveDelay:
+            if (chosen < 0 || static_cast<size_t>(chosen) >= LeaveDelaysMs.size()) return;
+            settings_.leaveDelayMs = LeaveDelaysMs[static_cast<size_t>(chosen)];
+            if (tracking_) Tick();
+            break;
         case BackgroundType:
             settings_.useImage = chosen == 1;
             UpdateWallpaper();
@@ -813,7 +833,7 @@ void App::HandleCommand(Control id, WORD notification) {
     switch (id) {
     case Enable:
         settings_.enabled = Checked(Enable);
-        paused_ = false;
+        ClearPause();
         Arm();
         break;
     case Identify: IdentifyMonitors(); return;
@@ -855,6 +875,7 @@ void App::HandleCommand(Control id, WORD notification) {
     case Clock: settings_.clock = Checked(Clock); RenderingSettingsChanged(); break;
     case Seconds: settings_.seconds = Checked(Seconds); RenderingSettingsChanged(); break;
     case Date: settings_.date = Checked(Date); RenderingSettingsChanged(); break;
+    case Weekday: settings_.weekday = Checked(Weekday); RenderingSettingsChanged(); break;
     case ClockColor:
         if (!PickColor(window_, settings_.clockColor)) return;
         RenderingSettingsChanged();
@@ -938,8 +959,10 @@ void App::TrayMenu() {
     HMENU menu = CreatePopupMenu();
     if (!menu) return;
     AppendMenuW(menu, MF_STRING, TraySettings, L"打开设置");
-    AppendMenuW(menu, MF_STRING | (settings_.enabled ? 0 : MF_GRAYED),
-                TrayPause, paused_ ? L"继续运行" : L"暂停效果");
+    const UINT pauseFlags = MF_STRING | (settings_.enabled ? 0 : MF_GRAYED);
+    AppendMenuW(menu, pauseFlags, TrayPause, paused_ ? L"继续运行" : L"暂停效果");
+    AppendMenuW(menu, pauseFlags, TrayPause15Minutes, L"暂停 15 分钟");
+    AppendMenuW(menu, pauseFlags, TrayPause1Hour, L"暂停 1 小时");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, TrayExit, L"退出 Foco");
     POINT cursor{};
@@ -952,6 +975,8 @@ void App::TrayMenu() {
     switch (action) {
     case TraySettings: ShowSettings(); break;
     case TrayPause: TogglePause(); break;
+    case TrayPause15Minutes: PauseFor(15 * MillisecondsPerMinute); break;
+    case TrayPause1Hour: PauseFor(60 * MillisecondsPerMinute); break;
     case TrayExit: DestroyWindow(window_); break;
     }
 }
@@ -959,8 +984,13 @@ void App::TrayMenu() {
 void App::UpdateStatus() {
     std::wstring next;
     if (!settings_.enabled) next = L"尚未启用";
-    else if (paused_) next = L"已暂停";
-    else if (locked_ || asleep_ || disconnected_) next = L"系统会话暂不可用";
+    else if (paused_) {
+        next = L"已暂停";
+        if (const auto now = GetTickCount64(); pauseUntil_ > now) {
+            const auto minutes = (pauseUntil_ - now + MillisecondsPerMinute - 1) / MillisecondsPerMinute;
+            next += L" · 约 " + std::to_wstring(minutes) + L" 分钟后恢复";
+        }
+    } else if (locked_ || asleep_ || disconnected_) next = L"系统会话暂不可用";
     else if (!TargetMonitor()) next = settings_.monitorId.empty() ? L"请选择副屏" : L"已选副屏未连接或已设为主屏";
     else if (!settings_.AnyEffect()) next = L"选择至少一种有效的效果";
     else if (phase_ == Phase::Capture) next = L"正在准备冻结画面";
@@ -987,7 +1017,37 @@ void App::UpdateStatus() {
 
 void App::TogglePause() {
     if (!settings_.enabled) return;
-    paused_ = !paused_;
+    if (paused_) ClearPause();
+    else paused_ = true;
+    Arm();
+}
+
+void App::PauseFor(UINT durationMs) {
+    if (!settings_.enabled || !SetTimer(window_, PauseTimer, std::min(durationMs, MillisecondsPerMinute), nullptr))
+        return;
+    paused_ = true;
+    pauseUntil_ = GetTickCount64() + durationMs;
+    Arm();
+}
+
+void App::ClearPause() {
+    if (pauseUntil_) KillTimer(window_, PauseTimer);
+    pauseUntil_ = 0;
+    paused_ = false;
+}
+
+void App::UpdateTimedPause() {
+    if (!pauseUntil_) return;
+    const auto now = GetTickCount64();
+    if (now < pauseUntil_) {
+        const auto remaining = pauseUntil_ - now;
+        const auto nextMinute = static_cast<UINT>((remaining - 1) % MillisecondsPerMinute + 1);
+        if (SetTimer(window_, PauseTimer, nextMinute, nullptr)) {
+            UpdateStatus();
+            return;
+        }
+    }
+    ClearPause();
     Arm();
 }
 
@@ -1113,7 +1173,8 @@ void App::Tick() {
         CaptureReady();
         if (phase_ == Phase::Capture) CaptureFailed(CaptureIssue::Timeout);
     }
-    if ((phase_ == Phase::Live || phase_ == Phase::Returning) && now - outsideSince_ >= LeaveDelay) {
+    if ((phase_ == Phase::Live || phase_ == Phase::Returning) &&
+        now - outsideSince_ >= static_cast<ULONGLONG>(settings_.leaveDelayMs)) {
         StartEffect(*monitor);
     }
 }
@@ -1303,6 +1364,7 @@ LRESULT App::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
         return 0;
     case WM_DESTROY:
         closing_ = true;
+        ClearPause();
         ClearIdentifiers();
         Arm();
         SaveNow();
@@ -1344,6 +1406,7 @@ LRESULT App::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
             if (wparam == WTS_SESSION_UNLOCK) locked_ = false;
             else disconnected_ = false;
             RefreshMonitors();
+            UpdateTimedPause();
         }
         return 0;
     case WM_POWERBROADCAST:
@@ -1351,6 +1414,7 @@ LRESULT App::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
         else if (wparam == PBT_APMRESUMEAUTOMATIC || wparam == PBT_APMRESUMESUSPEND) {
             asleep_ = false;
             RefreshMonitors();
+            UpdateTimedPause();
         }
         return TRUE;
     case WM_TIMECHANGE: ClockTick(); return 0;
@@ -1410,6 +1474,7 @@ LRESULT App::Handle(UINT message, WPARAM wparam, LPARAM lparam) {
         case ClockTimer: ClockTick(); break;
         case SaveTimer: SaveNow(); break;
         case IdentifyTimer: ClearIdentifiers(); Arm(); break;
+        case PauseTimer: UpdateTimedPause(); break;
         }
         return 0;
     case CaptureReadyMessage: CaptureReady(); return 0;

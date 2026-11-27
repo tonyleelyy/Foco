@@ -132,6 +132,8 @@ Settings LoadSettings(const std::filesystem::path& path) {
         else if (key == "saver") settings.saver = number != 0;
         else if (key == "fadeOnLeave") settings.fadeOnLeave = number != 0;
         else if (key == "fadeOnReturn") settings.fadeOnReturn = number != 0;
+        else if (key == "leaveDelayMs" && std::find(LeaveDelaysMs.begin(), LeaveDelaysMs.end(), number) !=
+                 LeaveDelaysMs.end()) settings.leaveDelayMs = number;
         else if (key == "dimLevel") settings.dimLevel = std::clamp(number, 0, 100);
         else if (key == "useImage") settings.useImage = number != 0;
         else if (key == "fillImage") settings.fillImage = number != 0;
@@ -140,6 +142,7 @@ Settings LoadSettings(const std::filesystem::path& path) {
         else if (key == "twelveHour") settings.twelveHour = number != 0;
         else if (key == "seconds") settings.seconds = number != 0;
         else if (key == "date") settings.date = number != 0;
+        else if (key == "weekday") settings.weekday = number != 0;
         else if (key == "clockSize") settings.clockSize = std::clamp(number, 32, 200);
         else if (key == "clockPosition") settings.clockPosition = std::clamp(number, 0, 4);
         else if (key == "clockColor") settings.clockColor = static_cast<COLORREF>(number) & 0xffffff;
@@ -161,10 +164,11 @@ bool SaveSettings(const std::filesystem::path& path, const Settings& s) {
         << "enabled=" << s.enabled << '\n' << "dim=" << s.dim << '\n'
         << "freeze=" << s.freeze << '\n' << "saver=" << s.saver << '\n'
         << "fadeOnLeave=" << s.fadeOnLeave << '\n' << "fadeOnReturn=" << s.fadeOnReturn << '\n'
+        << "leaveDelayMs=" << s.leaveDelayMs << '\n'
         << "dimLevel=" << s.dimLevel << '\n' << "useImage=" << s.useImage << '\n'
         << "fillImage=" << s.fillImage << '\n' << "background=" << s.background << '\n'
         << "clock=" << s.clock << '\n' << "twelveHour=" << s.twelveHour << '\n'
-        << "seconds=" << s.seconds << '\n' << "date=" << s.date << '\n'
+        << "seconds=" << s.seconds << '\n' << "date=" << s.date << '\n' << "weekday=" << s.weekday << '\n'
         << "clockSize=" << s.clockSize << '\n' << "clockPosition=" << s.clockPosition << '\n'
         << "clockColor=" << s.clockColor << '\n' << "hotkey=" << s.hotkey << '\n';
     out.close();

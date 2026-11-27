@@ -1,9 +1,13 @@
 #pragma once
 
 #include <windows.h>
+#include <array>
 #include <filesystem>
 #include <string>
 #include <vector>
+
+inline constexpr int DefaultLeaveDelayMs = 150;
+inline constexpr std::array LeaveDelaysMs{0, DefaultLeaveDelayMs, 500, 1000, 3000};
 
 struct Settings {
     std::wstring monitorId;
@@ -14,6 +18,7 @@ struct Settings {
     bool saver = false;
     bool fadeOnLeave = true;
     bool fadeOnReturn = true;
+    int leaveDelayMs = DefaultLeaveDelayMs;
     int dimLevel = 50;
     bool useImage = false;
     bool fillImage = true;
@@ -22,6 +27,7 @@ struct Settings {
     bool twelveHour = false;
     bool seconds = false;
     bool date = false;
+    bool weekday = false;
     int clockSize = 80;
     int clockPosition = 0;
     COLORREF clockColor = RGB(245, 245, 245);

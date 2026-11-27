@@ -31,6 +31,22 @@ D2D1_COLOR_F Color(COLORREF color, float alpha = 1.0f) {
     return D2D1::ColorF(GetRValue(color) / 255.0f, GetGValue(color) / 255.0f,
                         GetBValue(color) / 255.0f, alpha);
 }
+
+std::wstring CalendarText(const SYSTEMTIME& now, const Settings& settings) {
+    std::wstring text;
+    if (settings.date) {
+        wchar_t date[32]{};
+        swprintf_s(date, L"%u年%u月%u日", static_cast<unsigned>(now.wYear),
+                   static_cast<unsigned>(now.wMonth), static_cast<unsigned>(now.wDay));
+        text = date;
+    }
+    if (settings.weekday) {
+        constexpr PCWSTR weekdays[]{L"星期日", L"星期一", L"星期二", L"星期三", L"星期四", L"星期五", L"星期六"};
+        if (settings.date) text += L"  ";
+        text += weekdays[now.wDayOfWeek];
+    }
+    return text;
+}
 }
 
 Bitmap LoadWallpaper(const std::wstring& path) {
@@ -99,8 +115,9 @@ RECT ClockRenderer::Position(RECT screen, const Settings& settings, float scale)
     const LONG maximumWidth = std::max(1L, width - 2 * margin);
     const LONG maximumHeight = std::max(1L, height - 2 * margin);
     const LONG boxWidth = std::min(maximumWidth, static_cast<LONG>(std::ceil(size * 9 + 12)));
+    const bool showCalendar = settings.date || settings.weekday;
     const LONG boxHeight = std::min(maximumHeight,
-                                    static_cast<LONG>(std::ceil(size * (settings.date ? 1.85f : 1.35f) + 6)));
+                                    static_cast<LONG>(std::ceil(size * (showCalendar ? 1.85f : 1.35f) + 6)));
     const auto position = settings.clockPosition;
     const LONG x = position == 0 ? screen.left + (width - boxWidth) / 2 :
                    (position == 1 || position == 3 ? screen.left + margin : screen.right - margin - boxWidth);
@@ -125,32 +142,31 @@ bool ClockRenderer::Draw(HDC dc, RECT bounds, const Settings& settings, float sc
     const float width = static_cast<float>(bounds.right - bounds.left);
     const float height = static_cast<float>(bounds.bottom - bounds.top);
     const float desired = static_cast<float>(settings.clockSize) * scale;
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    const auto calendar = CalendarText(now, settings);
     const float size = std::max(1.0f, std::min({desired, width / (settings.seconds ? 6.8f : 4.8f),
-                                               height / (settings.date ? 1.78f : 1.16f)}));
-    ComPtr<IDWriteTextFormat> timeFormat, dateFormat;
+                                               height / (calendar.empty() ? 1.16f : 1.78f)}));
+    ComPtr<IDWriteTextFormat> timeFormat, calendarFormat;
     if (FAILED(write_->CreateTextFormat(L"Segoe UI Variable", nullptr, DWRITE_FONT_WEIGHT_SEMI_LIGHT,
         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"zh-CN", &timeFormat))) return false;
-    if (settings.date && FAILED(write_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size * 0.32f, L"zh-CN", &dateFormat))) return false;
+    if (!calendar.empty() && FAILED(write_->CreateTextFormat(L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL,
+        DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size * 0.32f, L"zh-CN", &calendarFormat))) return false;
     const auto position = settings.clockPosition;
     const auto alignment = position == 0 ? DWRITE_TEXT_ALIGNMENT_CENTER :
         (position == 1 || position == 3 ? DWRITE_TEXT_ALIGNMENT_LEADING : DWRITE_TEXT_ALIGNMENT_TRAILING);
-    for (auto* format : {timeFormat.Get(), dateFormat.Get()}) {
+    for (auto* format : {timeFormat.Get(), calendarFormat.Get()}) {
         if (!format) continue;
         format->SetTextAlignment(alignment);
         format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
         format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
     }
-    SYSTEMTIME now{};
-    GetLocalTime(&now);
     const unsigned hour = settings.twelveHour ? (now.wHour + 11u) % 12u + 1u : now.wHour;
-    wchar_t time[40]{}, date[48]{};
+    wchar_t time[40]{};
     if (settings.seconds) swprintf_s(time, L"%02u:%02u:%02u", hour, static_cast<unsigned>(now.wMinute),
                                      static_cast<unsigned>(now.wSecond));
     else swprintf_s(time, L"%02u:%02u", hour, static_cast<unsigned>(now.wMinute));
     if (settings.twelveHour) wcscat_s(time, now.wHour < 12 ? L" AM" : L" PM");
-    if (settings.date) swprintf_s(date, L"%u年%u月%u日", static_cast<unsigned>(now.wYear),
-                       static_cast<unsigned>(now.wMonth), static_cast<unsigned>(now.wDay));
 
     ComPtr<ID2D1SolidColorBrush> ink, shadow;
     if (FAILED(target->CreateSolidColorBrush(Color(settings.clockColor), &ink)) ||
@@ -163,9 +179,9 @@ bool ClockRenderer::Draw(HDC dc, RECT bounds, const Settings& settings, float sc
         target->DrawText(label, length, format, D2D1::RectF(4, top + 1, width - 2, bottom + 1), shadow.Get());
         target->DrawText(label, length, format, D2D1::RectF(3, top, width - 3, bottom), ink.Get());
     };
-    const float timeBottom = settings.date ? height * 0.72f : height;
+    const float timeBottom = calendarFormat ? height * 0.72f : height;
     draw(time, timeFormat.Get(), 0, timeBottom);
-    if (dateFormat) draw(date, dateFormat.Get(), timeBottom - 2, height);
+    if (calendarFormat) draw(calendar.c_str(), calendarFormat.Get(), timeBottom - 2, height);
     const auto status = target->EndDraw();
     if (status == D2DERR_RECREATE_TARGET) target.Reset();
     return SUCCEEDED(status);
